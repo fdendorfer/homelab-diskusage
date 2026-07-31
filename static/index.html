@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Disk Usage</title>
+<style>
+  :root { color-scheme: dark light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #14161a;
+    color: #e6e6e6;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #1c1f24;
+    border-bottom: 1px solid #2a2e35;
+    flex-wrap: wrap;
+  }
+  select, button {
+    background: #2a2e35;
+    color: #e6e6e6;
+    border: 1px solid #3a3f47;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover, select:hover { background: #343941; }
+  #status { font-size: 12px; color: #9aa0a8; margin-left: auto; }
+  #breadcrumb {
+    padding: 8px 14px;
+    font-size: 13px;
+    background: #181b20;
+    border-bottom: 1px solid #2a2e35;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  #breadcrumb span { cursor: pointer; color: #7fb0ff; }
+  #breadcrumb span:hover { text-decoration: underline; }
+  #breadcrumb .sep { color: #555; cursor: default; }
+  #breadcrumb .sep:hover { text-decoration: none; }
+  #treemap {
+    position: relative;
+    flex: 1;
+    margin: 10px;
+    overflow: hidden;
+  }
+  .cell {
+    position: absolute;
+    border: 1px solid rgba(0,0,0,0.35);
+    overflow: hidden;
+    font-size: 11px;
+    padding: 2px 4px;
+    color: rgba(255,255,255,0.92);
+    text-shadow: 0 1px 1px rgba(0,0,0,0.5);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .cell:hover { outline: 2px solid #fff; outline-offset: -2px; z-index: 5; }
+  #empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #666;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <select id="rootSelect"></select>
+  <button id="rescanBtn">Rescan</button>
+  <span id="status">loading...</span>
+</header>
+<div id="breadcrumb"></div>
+<div id="treemap"><div id="empty">loading...</div></div>
+
+<script>
+let currentRootLabel = null;
+let fullTree = null;
+let pathStack = []; // array of nodes from root to current view
+
+function fmtBytes(n) {
+  if (n < 1024) return n + " B";
+  const units = ["KB","MB","GB","TB","PB"];
+  let u = -1;
+  do { n /= 1024; u++; } while (n >= 1024 && u < units.length - 1);
+  return n.toFixed(n < 10 ? 2 : 1) + " " + units[u];
+}
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function loadRoots() {
+  const roots = await fetchJSON("/api/roots");
+  const sel = document.getElementById("rootSelect");
+  sel.innerHTML = "";
+  for (const r of roots) {
+    const opt = document.createElement("option");
+    opt.value = r.label;
+    opt.textContent = r.label + " (" + r.path + ")";
+    sel.appendChild(opt);
+  }
+  sel.onchange = () => selectRoot(sel.value);
+  if (roots.length > 0) selectRoot(roots[0].label);
+}
+
+async function selectRoot(label) {
+  currentRootLabel = label;
+  fullTree = null;
+  pathStack = [];
+  renderBreadcrumb();
+  setStatus("checking...");
+  const st = await fetchJSON("/api/status?root=" + encodeURIComponent(label));
+  if (st.hasData) {
+    await loadData();
+  } else {
+    await triggerScan();
+  }
+}
+
+async function triggerScan() {
+  setStatus("scanning...");
+  document.getElementById("treemap").innerHTML = '<div id="empty">scanning, this can take a while on first run...</div>';
+  await fetchJSON("/api/scan?root=" + encodeURIComponent(currentRootLabel), { method: "POST" });
+  pollStatus();
+}
+
+async function pollStatus() {
+  const st = await fetchJSON("/api/status?root=" + encodeURIComponent(currentRootLabel));
+  if (st.scanning) {
+    setStatus("scanning...");
+    setTimeout(pollStatus, 800);
+    return;
+  }
+  await loadData();
+}
+
+async function loadData() {
+  const st = await fetchJSON("/api/status?root=" + encodeURIComponent(currentRootLabel));
+  fullTree = await fetchJSON("/api/data?root=" + encodeURIComponent(currentRootLabel));
+  pathStack = [fullTree];
+  setStatus(st.lastScan ? "last scan: " + new Date(st.lastScan).toLocaleString() : "");
+  renderBreadcrumb();
+  renderCurrent();
+}
+
+function setStatus(text) {
+  document.getElementById("status").textContent = text;
+}
+
+function renderBreadcrumb() {
+  const el = document.getElementById("breadcrumb");
+  el.innerHTML = "";
+  pathStack.forEach((node, i) => {
+    if (i > 0) {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = " / ";
+      el.appendChild(sep);
+    }
+    const span = document.createElement("span");
+    span.textContent = node.name + (i === 0 ? "" : "");
+    span.onclick = () => { pathStack = pathStack.slice(0, i + 1); renderBreadcrumb(); renderCurrent(); };
+    el.appendChild(span);
+  });
+}
+
+function renderCurrent() {
+  const node = pathStack[pathStack.length - 1];
+  const container = document.getElementById("treemap");
+  container.innerHTML = "";
+  const children = (node.children || []).filter(c => c.size > 0);
+  if (children.length === 0) {
+    container.innerHTML = '<div id="empty">no children (empty directory or file)</div>';
+    return;
+  }
+  const boxes = [];
+  layout(children, 0, 0, 1000, 1000, boxes, pathStack.length);
+  const rect = container.getBoundingClientRect();
+  for (const b of boxes) {
+    const div = document.createElement("div");
+    div.className = "cell";
+    div.style.left = (b.x / 10) + "%";
+    div.style.top = (b.y / 10) + "%";
+    div.style.width = (b.w / 10) + "%";
+    div.style.height = (b.h / 10) + "%";
+    div.style.background = colorFor(b.depth, b.index);
+    div.title = b.node.name + " — " + fmtBytes(b.node.size);
+    const pxW = (b.w / 1000) * rect.width;
+    const pxH = (b.h / 1000) * rect.height;
+    if (pxW > 40 && pxH > 14) {
+      div.textContent = b.node.name + " (" + fmtBytes(b.node.size) + ")";
+    }
+    if (b.node.children && b.node.children.length > 0) {
+      div.onclick = () => { pathStack.push(b.node); renderBreadcrumb(); renderCurrent(); };
+    }
+    container.appendChild(div);
+  }
+}
+
+// simple recursive binary-split treemap layout in a 0..1000 virtual coordinate space
+function layout(nodes, x, y, w, h, out, depth, index) {
+  index = index || 0;
+  if (nodes.length === 0) return;
+  if (nodes.length === 1) {
+    out.push({ node: nodes[0], x, y, w, h, depth, index });
+    return;
+  }
+  const weights = nodes.map(n => Math.max(n.size, 1));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let acc = 0, splitIdx = 1;
+  for (let i = 0; i < weights.length; i++) {
+    acc += weights[i];
+    if (acc >= total / 2) { splitIdx = i + 1; break; }
+  }
+  splitIdx = Math.min(Math.max(splitIdx, 1), nodes.length - 1);
+  const groupA = nodes.slice(0, splitIdx);
+  const groupB = nodes.slice(splitIdx);
+  const sumA = weights.slice(0, splitIdx).reduce((a, b) => a + b, 0);
+  const fracA = sumA / total;
+
+  if (w >= h) {
+    const wA = w * fracA;
+    layout(groupA, x, y, wA, h, out, depth, index);
+    layout(groupB, x + wA, y, w - wA, h, out, depth, index + splitIdx);
+  } else {
+    const hA = h * fracA;
+    layout(groupA, x, y, w, hA, out, depth, index);
+    layout(groupB, x, y + hA, w, h - hA, out, depth, index + splitIdx);
+  }
+}
+
+function colorFor(depth, index) {
+  const hue = (depth * 67 + index * 13) % 360;
+  return "hsl(" + hue + ", 45%, 40%)";
+}
+
+document.getElementById("rescanBtn").onclick = () => triggerScan();
+
+window.onresize = () => { if (fullTree) renderCurrent(); };
+
+loadRoots().catch(e => setStatus("error: " + e.message));
+</script>
+</body>
+</html>

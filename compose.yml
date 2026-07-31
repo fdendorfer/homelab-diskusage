@@ -1,0 +1,17 @@
+services:
+  diskusage:
+    build: .
+    container_name: diskusage
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      - ROOTS=seagate:/data/seagate,home:/data/home
+    volumes:
+      - /mnt/seagate:/data/seagate:ro
+      - /home:/data/home:ro
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
