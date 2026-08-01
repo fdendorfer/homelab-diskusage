@@ -151,7 +151,7 @@ async function loadRoots() {
   for (const r of roots) {
     const opt = document.createElement("option");
     opt.value = r.label;
-    opt.textContent = r.label + " (" + r.path + ")";
+    opt.textContent = r.label;
     sel.appendChild(opt);
   }
   sel.onchange = () => selectRoot(sel.value);

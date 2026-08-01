@@ -190,6 +190,10 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		rootDev, _ := deviceOf(root.Path)
 		result := scanDir(root.Path, rootDev)
+		// The tree's display name should be the user-facing root label, not
+		// the container-internal mount path's basename (meaningless outside
+		// the container, and inconsistent with the root selector otherwise).
+		result.Name = label
 		st.mu.Lock()
 		st.data = result
 		st.lastScan = time.Now()
