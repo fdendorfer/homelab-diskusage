@@ -3,12 +3,15 @@ services:
     build: .
     container_name: diskusage
     restart: unless-stopped
-    mem_limit: 768m
+    mem_limit: 2g
     environment:
-      - ROOTS=seagate:/data/seagate,home:/data/home
+      # "system" is the host root filesystem (non-recursive bind — other
+      # mounted filesystems, /proc, /sys etc. appear empty, so this only
+      # covers the actual system/nvme drive, not a duplicate of "seagate").
+      - ROOTS=system:/data/system,seagate:/data/seagate
     volumes:
+      - /:/data/system:ro
       - /mnt/seagate:/data/seagate:ro
-      - /home:/data/home:ro
     networks:
       - proxy
 

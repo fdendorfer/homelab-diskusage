@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -84,7 +85,25 @@ func readDirLimited(path string) []os.DirEntry {
 	return entries
 }
 
-func scanDir(path string) *Node {
+// deviceOf returns the filesystem device ID a path lives on, so scanning can
+// stay on one filesystem (like `du -x`). Bind-mounting host "/" into the
+// container also exposes /proc, /sys, and — critically — Docker's own
+// overlay "merged" mounts, which reflect the container's own live view of
+// itself; without this check those recurse into nonsense sizes (a /proc
+// entry alone reported as ~140TB from a stale kcore-style virtual file).
+func deviceOf(path string) (uint64, bool) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(st.Dev), true
+}
+
+func scanDir(path string, rootDev uint64) *Node {
 	name := filepath.Base(path)
 	node := &Node{Name: name}
 
@@ -98,10 +117,18 @@ func scanDir(path string) *Node {
 		childPath := filepath.Join(path, e.Name())
 
 		if e.IsDir() {
+			if dev, ok := deviceOf(childPath); ok && dev != rootDev {
+				// Different filesystem (mount point) — record it as a
+				// boundary marker but don't descend into it.
+				mu.Lock()
+				node.Children = append(node.Children, &Node{Name: e.Name(), Size: 0})
+				mu.Unlock()
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				child := scanDir(childPath)
+				child := scanDir(childPath, rootDev)
 				mu.Lock()
 				node.Children = append(node.Children, child)
 				node.Size += child.Size
@@ -161,7 +188,8 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 	st.mu.Unlock()
 
 	go func() {
-		result := scanDir(root.Path)
+		rootDev, _ := deviceOf(root.Path)
+		result := scanDir(root.Path, rootDev)
 		st.mu.Lock()
 		st.data = result
 		st.lastScan = time.Now()

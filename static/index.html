@@ -75,16 +75,55 @@
     color: #666;
     font-size: 14px;
   }
+  label.toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+  }
+  #listView {
+    flex: 1;
+    margin: 10px;
+    overflow: auto;
+  }
+  table.list {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.list th, table.list td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid #23262c;
+  }
+  table.list th {
+    color: #9aa0a8;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    background: #14161a;
+  }
+  table.list td.size { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  table.list tr.dir { cursor: pointer; }
+  table.list tr.dir:hover { background: #1c1f24; }
+  table.list td.bar-cell { width: 30%; }
+  .bar-track { background: #23262c; border-radius: 3px; height: 8px; overflow: hidden; }
+  .bar-fill { background: #4a7fd6; height: 100%; }
+  .icon { display: inline-block; width: 1.2em; }
 </style>
 </head>
 <body>
 <header>
   <select id="rootSelect"></select>
   <button id="rescanBtn">Rescan</button>
+  <label class="toggle"><input type="checkbox" id="showBlocks" checked> Show blocks</label>
   <span id="status">loading...</span>
 </header>
 <div id="breadcrumb"></div>
 <div id="treemap"><div id="empty">loading...</div></div>
+<div id="listView" style="display:none"></div>
 
 <script>
 let currentRootLabel = null;
@@ -181,6 +220,23 @@ function renderBreadcrumb() {
 }
 
 function renderCurrent() {
+  const showBlocks = document.getElementById("showBlocks").checked;
+  document.getElementById("treemap").style.display = showBlocks ? "" : "none";
+  document.getElementById("listView").style.display = showBlocks ? "none" : "";
+  if (showBlocks) {
+    renderTreemap();
+  } else {
+    renderList();
+  }
+}
+
+function drillInto(node) {
+  pathStack.push(node);
+  renderBreadcrumb();
+  renderCurrent();
+}
+
+function renderTreemap() {
   const node = pathStack[pathStack.length - 1];
   const container = document.getElementById("treemap");
   container.innerHTML = "";
@@ -207,10 +263,42 @@ function renderCurrent() {
       div.textContent = b.node.name + " (" + fmtBytes(b.node.size) + ")";
     }
     if (b.node.children && b.node.children.length > 0) {
-      div.onclick = () => { pathStack.push(b.node); renderBreadcrumb(); renderCurrent(); };
+      div.onclick = () => drillInto(b.node);
     }
     container.appendChild(div);
   }
+}
+
+function renderList() {
+  const node = pathStack[pathStack.length - 1];
+  const container = document.getElementById("listView");
+  const children = [...(node.children || [])].sort((a, b) => b.size - a.size);
+  if (children.length === 0) {
+    container.innerHTML = '<div id="empty">no children (empty directory or file)</div>';
+    return;
+  }
+  const maxSize = children[0].size || 1;
+  const rows = children.map(c => {
+    const isDir = !!(c.children && c.children.length > 0);
+    const pct = Math.max((c.size / maxSize) * 100, 0.5);
+    return '<tr class="' + (isDir ? "dir" : "") + '" data-name="' + escapeHtml(c.name) + '">' +
+      '<td><span class="icon">' + (isDir ? "\u{1F4C1}" : "\u{1F4C4}") + '</span>' + escapeHtml(c.name) + '</td>' +
+      '<td class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:' + pct.toFixed(1) + '%"></div></div></td>' +
+      '<td class="size">' + fmtBytes(c.size) + '</td>' +
+      '</tr>';
+  }).join("");
+  container.innerHTML = '<table class="list"><thead><tr><th>Name</th><th>Usage</th><th>Size</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  container.querySelectorAll("tr.dir").forEach(tr => {
+    tr.onclick = () => {
+      const name = tr.getAttribute("data-name");
+      const child = children.find(c => c.name === name);
+      if (child) drillInto(child);
+    };
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 
 // simple recursive binary-split treemap layout in a 0..1000 virtual coordinate space
@@ -251,6 +339,7 @@ function colorFor(depth, index) {
 }
 
 document.getElementById("rescanBtn").onclick = () => triggerScan();
+document.getElementById("showBlocks").onchange = () => { if (fullTree) renderCurrent(); };
 
 window.onresize = () => { if (fullTree) renderCurrent(); };
 
