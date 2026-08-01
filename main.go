@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ var staticFS embed.FS
 type Node struct {
 	Name     string  `json:"name"`
 	Size     int64   `json:"size"`
+	ModTime  int64   `json:"mtime"` // unix seconds; for directories, the newest mtime among all descendants
 	Children []*Node `json:"children,omitempty"`
 }
 
@@ -132,23 +134,41 @@ func scanDir(path string, rootDev uint64) *Node {
 				mu.Lock()
 				node.Children = append(node.Children, child)
 				node.Size += child.Size
+				if child.ModTime > node.ModTime {
+					node.ModTime = child.ModTime
+				}
 				mu.Unlock()
 			}()
 			continue
 		}
 
 		info, err := e.Info()
-		var sz int64
+		var sz, mtime int64
 		if err == nil {
 			sz = info.Size()
+			mtime = info.ModTime().Unix()
 		}
 		mu.Lock()
-		node.Children = append(node.Children, &Node{Name: e.Name(), Size: sz})
+		node.Children = append(node.Children, &Node{Name: e.Name(), Size: sz, ModTime: mtime})
 		node.Size += sz
+		if mtime > node.ModTime {
+			node.ModTime = mtime
+		}
 		mu.Unlock()
 	}
 
 	wg.Wait()
+
+	// Directory's own ModTime is the newest among its descendants — a more
+	// useful "last touched" signal than the directory inode's own mtime,
+	// which only tracks entries being added/removed, not deeper content
+	// changes. Fall back to the directory's own mtime only if it has no
+	// children to derive one from (e.g. an empty directory).
+	if node.ModTime == 0 {
+		if info, err := os.Lstat(path); err == nil {
+			node.ModTime = info.ModTime().Unix()
+		}
+	}
 	sort.Slice(node.Children, func(i, j int) bool {
 		return node.Children[i].Size > node.Children[j].Size
 	})
@@ -199,6 +219,14 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 		st.lastScan = time.Now()
 		st.scanning = false
 		st.mu.Unlock()
+
+		// A scan generates a lot of short-lived garbage (a DirEntry slice per
+		// directory, temporary strings, etc.) on top of the tree itself. Go's
+		// allocator doesn't return freed pages to the OS promptly, so RSS
+		// otherwise sits at the scan's peak working set rather than what's
+		// actually still live. Force a full GC + OS release once the scan
+		// (and its garbage) is done.
+		debug.FreeOSMemory()
 	}()
 
 	writeJSON(w, map[string]string{"status": "started"})
