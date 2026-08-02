@@ -28,6 +28,27 @@ Each path should be a read-only bind mount into the container (see `compose.yml`
 the whole host filesystem (bind-mount `/`) — scanning stays on that filesystem only (see below), so
 it won't wander into other mounted drives or double-count them.
 
+## Running it
+
+**Standalone (any Docker host):** `docker build -t diskusage .` builds a self-contained scratch
+image (multi-stage `Dockerfile`, Go build + `FROM scratch` runtime) — run it with `ROOTS` set and
+your directories bind-mounted read-only, same as the config example above.
+
+**Fast-iteration deploy (what this homelab uses):** the app compiles to a single static binary
+(`static/index.html` is `//go:embed`-ed in, so there are no separate assets to ship). Rather than
+rebuild a Docker image on every change, `./build.sh` compiles it in a throwaway `golang:1.22-alpine`
+container and drops the binary straight into the compose directory the running container mounts —
+so redeploying is just a restart, not a rebuild:
+
+```bash
+./build.sh                    # -> ~/homelab/compose/diskusage/diskusage
+docker restart diskusage      # picks up the new binary, no image build
+```
+
+Override the output location with `DISKUSAGE_DEPLOY_DIR` if your compose directory lives elsewhere.
+The compose service itself just runs `alpine:latest` with `entrypoint: ['/diskusage']` and bind-mounts
+the binary in read-only — see `~/homelab/compose/diskusage/compose.yml` on the server.
+
 ## API
 
 - `GET  /api/roots` — configured scan roots
