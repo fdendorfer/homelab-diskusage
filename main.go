@@ -105,7 +105,25 @@ func deviceOf(path string) (uint64, bool) {
 	return uint64(st.Dev), true
 }
 
-func scanDir(path string, rootDev uint64) *Node {
+// inodeKey identifies a file's underlying data, not one particular directory
+// entry pointing at it. Radarr/Sonarr et al. hardlink a completed download
+// into the library instead of copying it, so the same inode legitimately
+// appears at multiple paths — counting it at every path it's linked from
+// would inflate the total by the size of anything still seeding.
+type inodeKey struct {
+	dev, ino uint64
+}
+
+// seenInodes tracks which hardlinked files have already been counted once
+// within a single scan, so re-encountering the same inode under a different
+// path attributes it as free (size 0) rather than double-counting it —
+// matching `du`'s behavior for hardlinks.
+type seenInodes struct {
+	mu   sync.Mutex
+	seen map[inodeKey]bool
+}
+
+func scanDir(path string, rootDev uint64, seen *seenInodes) *Node {
 	name := filepath.Base(path)
 	node := &Node{Name: name}
 
@@ -130,7 +148,7 @@ func scanDir(path string, rootDev uint64) *Node {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				child := scanDir(childPath, rootDev)
+				child := scanDir(childPath, rootDev, seen)
 				mu.Lock()
 				node.Children = append(node.Children, child)
 				node.Size += child.Size
@@ -145,8 +163,18 @@ func scanDir(path string, rootDev uint64) *Node {
 		info, err := e.Info()
 		var sz, mtime int64
 		if err == nil {
-			sz = info.Size()
 			mtime = info.ModTime().Unix()
+			sz = info.Size()
+			if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+				key := inodeKey{dev: uint64(st.Dev), ino: st.Ino}
+				seen.mu.Lock()
+				if seen.seen[key] {
+					sz = 0
+				} else {
+					seen.seen[key] = true
+				}
+				seen.mu.Unlock()
+			}
 		}
 		mu.Lock()
 		node.Children = append(node.Children, &Node{Name: e.Name(), Size: sz, ModTime: mtime})
@@ -209,7 +237,8 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		rootDev, _ := deviceOf(root.Path)
-		result := scanDir(root.Path, rootDev)
+		seen := &seenInodes{seen: map[inodeKey]bool{}}
+		result := scanDir(root.Path, rootDev, seen)
 		// The tree's display name should be the user-facing root label, not
 		// the container-internal mount path's basename (meaningless outside
 		// the container, and inconsistent with the root selector otherwise).
