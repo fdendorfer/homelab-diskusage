@@ -125,6 +125,8 @@ let currentRootLabel = null;
 let fullTree = null;
 let pathStack = []; // array of nodes from root to current view
 let showBlocks = true;
+const treeCache = {}; // label -> { lastScan, tree } — avoids re-fetching/parsing a
+                       // multi-megabyte tree on every switch back to an already-scanned root
 
 function fmtBytes(n) {
   if (n < 1024) return n + " B";
@@ -192,7 +194,14 @@ async function pollStatus() {
 
 async function loadData() {
   const st = await fetchJSON("/api/status?root=" + encodeURIComponent(currentRootLabel));
-  fullTree = await fetchJSON("/api/data?root=" + encodeURIComponent(currentRootLabel));
+  const cached = treeCache[currentRootLabel];
+  if (cached && cached.lastScan === st.lastScan) {
+    fullTree = cached.tree;
+  } else {
+    setStatus("loading...");
+    fullTree = await fetchJSON("/api/data?root=" + encodeURIComponent(currentRootLabel));
+    treeCache[currentRootLabel] = { lastScan: st.lastScan, tree: fullTree };
+  }
   pathStack = [fullTree];
   setStatus(st.lastScan ? "last scan: " + new Date(st.lastScan).toLocaleString() : "");
   renderBreadcrumb();
